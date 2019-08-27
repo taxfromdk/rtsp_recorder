@@ -21,24 +21,24 @@ void sigint_handler(int sig)
 
 int main(int argc, char *argv[]) 
 {
-    printf("rtsp_recorder\r\n");
+    printf("RTSP Recorder\r\n");
     if(argc != 2)
     {
         printf("Usage:\r\n");
         printf("      ./rtsp_recorder [base_rtsp_url]\r\n");
         exit(1);
     }
-    printf("RTSP Recorder\r\n");
-
+    
     //Init basedata shared between all parts of application
     memset((void*)&basedata, 0, sizeof(ApplicationBaseData));
+    
+    //Store argc and argv so they can be passed on to recorder when init gstreamer
     basedata.argc = argc;
     basedata.argv = argv;
 
     basedata.rtsp_url = argv[1];
-    basedata.outbox = "outbox";
+    basedata.outbox = "outbox/";
     basedata.shutdown = 0;
-    
 
     printf("rtsp_url: %s\r\n", basedata.rtsp_url);
     
@@ -59,13 +59,13 @@ int main(int argc, char *argv[])
             {
                 if(ch == '1')
                 {
-                    recorderStart();
+                    //recorderStart();
                 }
                 else
                 {
                     if(ch == '2')
                     {
-                        recorderStop();
+                        //recorderStop();
                     }
                     else
                     {

@@ -1,6 +1,8 @@
 #ifndef RECORDER_H
 #define RECORDER_H
 
+#include "util.h"
+
 int recorderInit(ApplicationBaseData* bd);
 int recorderExit();
 
