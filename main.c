@@ -11,8 +11,6 @@
 
 ApplicationBaseData basedata;
 
-int main_running = 1;
-
 void sigint_handler(int sig)
 {
 	printf("Interrupt\r\n");
