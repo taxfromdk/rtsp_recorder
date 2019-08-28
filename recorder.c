@@ -328,6 +328,11 @@ void *recorderThread(void *p)
     
     gst_init(&pbasedata->argc, &pbasedata->argv);    
 
+    guint major, minor, micro, nano;
+    gst_version(&major, &minor, &micro, &nano);    
+    printf("RECORDER: Gstreamer version %d %d %d %d\r\n", major, minor, micro, nano);
+    gst_debug_set_default_threshold(3); //Debug logging messages, 3 = FIXME, 2 = WARNING, 1 = ERROR
+
     //Gstreamer components init
     memset(&data, 0, sizeof(CustomData));
 
