@@ -59,13 +59,13 @@ int main(int argc, char *argv[])
             {
                 if(ch == '1')
                 {
-                    //recorderStart();
+                    recorderStart();
                 }
                 else
                 {
                     if(ch == '2')
                     {
-                        //recorderStop();
+                        recorderStop();
                     }
                     else
                     {
