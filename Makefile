@@ -8,7 +8,7 @@ make: main.c
 
 test:
 	mkdir -p outbox
-	./rtsp_recorder rtsp://127.0.0.1:8554/1
+	GST_DEBUG="GST_TRACER:7" GST_TRACERS="leaks(GstTaskPool,GstCaps)" ./rtsp_recorder rtsp://127.0.0.1:8554/1
 
 clean:
 	rm -rf rtsp_recorder outbox
