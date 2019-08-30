@@ -36,6 +36,7 @@ typedef struct _CustomData {
     GstElement* h264parse;
     GstElement* queue_video;
 
+    GstElement *tsmux;
     GstElement *hlssink;
 
     GMainLoop *loop;
@@ -222,8 +223,8 @@ int bus_callback(GstBus *bus, GstMessage *msg, gpointer d) {
                         fclose(b);
                         free(playlist_location);
                     }
-                    /*g_message ("get message %d: %s", handled_cnt,
-                            gst_structure_get_name (gst_message_get_structure(msg)));*/
+                    g_message ("get message %d: %s", handled_cnt,
+                            gst_structure_get_name (gst_message_get_structure(msg)));
                     
                 }
             }
@@ -257,12 +258,12 @@ static void pad_added_handler(GstElement *src, GstPad *new_pad, void* p)
     data.rtspsrc_small_source_pad = new_pad;
     g_print("Received new pad '%s' from '%s':\n", GST_PAD_NAME(data.rtspsrc_small_source_pad), GST_ELEMENT_NAME(src));
 
-    const gchar *new_pad_type = gst_structure_get_name(
-        gst_caps_get_structure(
-            gst_pad_get_current_caps(data.rtspsrc_small_source_pad), 0
-        )
-    );
+    GstCaps * pcaps = gst_pad_get_current_caps(data.rtspsrc_small_source_pad);
+
+    const gchar *new_pad_type = gst_structure_get_name(gst_caps_get_structure(pcaps, 0));
     
+    gst_caps_unref(pcaps);
+
     if (g_str_has_prefix(new_pad_type, "application/x-rtp")) 
     {
         GstPadLinkReturn ret = gst_pad_link (data.rtspsrc_small_source_pad, data.rtph264depay_sink_pad);
@@ -293,23 +294,42 @@ void* housekeepingThread(gpointer d)
     time_t next_operation_time = 0;
     time ( &next_operation_time );
 
-    next_operation_time += 5;
+    next_operation_time += 0;
 
+    int tc = 0;
     while(!pbasedata->shutdown)
     {    
-        usleep(100000);
-        //Shall we keep running
-        if(pbasedata->shutdown)
+        usleep(1000000);
+        
+        if(recorder_record_thread == (pthread_t)NULL)
         {
-            //If recording is in progress - stop recording
-            if(GST_STATE (data.pipeline) != GST_STATE_NULL)
-            {
-                printf("RECORDER: Stopping recording in progress.\r\n");
-                recorderStop();
-            } 
-            //Stop recorder thread main loop
-            g_main_loop_quit (data.loop);
+            printf("Idle %d\r\n", tc);
         }
+        else
+        {
+            printf("Recording %d\r\n", tc);
+        }
+        tc ++;
+
+        /*
+        time_t now;
+        time ( &now );
+
+        if(now > next_operation_time)
+        {
+            if(recorder_record_thread == (pthread_t)NULL)
+            {
+                recorderStart();
+            }
+            else
+            {
+                recorderStop();
+            }
+            next_operation_time += 10;
+        }
+         */
+
+
     }
 }
 
@@ -321,59 +341,75 @@ void* housekeepingThread(gpointer d)
 //######################################################################
 void *recorderThread(void *p)
 {
-
-    //Init pipeline so its ready to start recording
-
     printf("RECORDER: Starting thread()\r\n");
     
-    gst_init(&pbasedata->argc, &pbasedata->argv);    
-
-    guint major, minor, micro, nano;
-    gst_version(&major, &minor, &micro, &nano);    
-    printf("RECORDER: Gstreamer version %d %d %d %d\r\n", major, minor, micro, nano);
-    gst_debug_set_default_threshold(3); //Debug logging messages, 3 = FIXME, 2 = WARNING, 1 = ERROR
-
-    //Gstreamer components init
+    //Pickup time and use for recording ID
+    time ( &recording_id );
+    
+    //Reset structure
     memset(&data, 0, sizeof(CustomData));
 
+    //Create pipeline
     data.pipeline = gst_pipeline_new("pipeline");
-
     if (data.pipeline == NULL)
     {
         printf("Pipeline could not be created.\r\n");
         exit(1);
     }
     
-    //Create and add elements
+    //Gstreamer components init
     data.rtspsrc_small = gst_element_factory_make("rtspsrc", "rtspsrc_small");
     data.rtph264depay = gst_element_factory_make("rtph264depay", "rtph264depay");
     data.h264parse = gst_element_factory_make("h264parse", "h264parse");
     data.queue_video = gst_element_factory_make("queue", "queue_video");
-    data.hlssink = gst_element_factory_make("hlssink2", "hlssink");
-    if ( !data.rtspsrc_small || !data.rtph264depay || !data.h264parse || !data.queue_video || !data.hlssink)
+    data.tsmux = gst_element_factory_make("mpegtsmux", "tsmux");
+    data.hlssink = gst_element_factory_make("hlssink", "hlssink");
+    
+    if (    !data.rtspsrc_small || 
+            !data.rtph264depay || 
+            !data.h264parse || 
+            !data.queue_video ||
+            !data.tsmux || 
+            !data.hlssink)
     {
         g_printerr("Fatal -> Not all elements could be created.\n");
         pbasedata->shutdown = 1;
         return NULL;
     }
+    
+    //Add to pipeline
     gst_bin_add_many(GST_BIN(data.pipeline),
         data.rtspsrc_small,
         data.rtph264depay,
         data.h264parse,
         data.queue_video,
-        data.hlssink, NULL);
-
-    //Link elements (except rtspsrc that does not have its pad yet)
-    gst_element_link_many(
-        data.rtph264depay, 
-        data.h264parse,
-        data.queue_video,
+        data.tsmux,
         data.hlssink,
-        NULL);    
+         NULL);
+
 
     //Pickup sink pad
     data.rtph264depay_sink_pad = gst_element_get_static_pad(data.rtph264depay, "sink");
-
+    
+    //Configure components
+    //Create paths for hlssink
+    char* base_filename = getBaseFileName("ID", recording_id, "S");    
+    char* segment_string = getSegmentString(base_filename);
+    char* segment_string_outbox = getOutboxPath(segment_string, pbasedata->outbox);
+    char* playlist_string = getPlaylistString(base_filename);
+    char* playlist_string_outbox = getTmpPath(playlist_string);
+    g_object_set(data.hlssink,
+        "location", segment_string_outbox,
+        "playlist-location", playlist_string_outbox,
+        NULL);
+    printf("Starting recording \r\n%s\r\n%s\r\n", segment_string_outbox, playlist_string_outbox);
+    //free strings
+    free(base_filename);
+    free(segment_string);
+    free(segment_string_outbox);
+    free(playlist_string);
+    free(playlist_string_outbox);
+    
     //Set parameters for rtspsrc
     char buffer[100];
     sprintf(buffer, "%s", pbasedata->rtsp_url);
@@ -394,7 +430,9 @@ void *recorderThread(void *p)
         "playlist-length", 0,
         "target-duration", 5,
         NULL);
-            
+
+    //"message-forward", TRUE,
+        
     //Get reference to bus
     data.bus = gst_element_get_bus(data.pipeline);
     
@@ -404,19 +442,45 @@ void *recorderThread(void *p)
     //Setup callback to connect rtsp pads to other modules
     g_signal_connect(data.rtspsrc_small, "pad-added", G_CALLBACK(pad_added_handler), &(data));
 
-    //Create loop    
+    //Create loop
     data.loop = g_main_loop_new(NULL, FALSE);    
     
+    //Link elements (except rtspsrc that does not have its pad yet)
+    gst_element_link_many(
+        data.rtph264depay, 
+        data.h264parse,
+        data.queue_video,
+        data.tsmux,
+        data.hlssink,
+        NULL);    
+
+    //Set to playing state
+    gst_element_set_state (data.pipeline, GST_STATE_PLAYING);
 
     //Run loop untill housekeeping discover we should stop
-    g_main_loop_run(data.loop);
+    g_main_loop_run(data.loop); //Blocking
     
+    /*
+    gst_pad_unlink (data.rtspsrc_small_source_pad, data.rtph264depay_sink_pad);
+    gst_object_unref(data.rtspsrc_small_source_pad);
+    gst_object_unref(data.rtph264depay_sink_pad);
+    */
+
+    gst_element_unlink_many(
+        data.rtspsrc_small, 
+        data.rtph264depay, 
+        data.h264parse,
+        data.queue_video,
+        data.tsmux,
+        data.hlssink,
+        NULL);    
+    
+
     //Unref pipeline
     gst_object_unref(data.pipeline);        
-    
+
     printf("RECORDER: Ending thread\r\n");
-    
-    gst_deinit();
+    recorder_record_thread = (pthread_t)NULL;
 }
 
 //######################################################################
@@ -431,41 +495,19 @@ int recorderStart()
     printf("###### RECORDER: Start\r\n");
     printf("######\r\n");
 
-    if(GST_STATE (data.pipeline) != GST_STATE_NULL)
-    {    
-        printf("Cant start a recording thats already in progress %s\r\n", 
-        gst_element_state_get_name(GST_STATE(data.pipeline)));
+    //Only start if recording thread not running
+    if(recorder_record_thread != (pthread_t)NULL)
+    {
+        printf("Recorder already in progress\r\n");
         return FAIL;
     }
-
-    //Pickup time and use for recording ID
-    time ( &recording_id );
     
-    //Create paths for hlssink
-    char* base_filename = getBaseFileName("ID", recording_id, "S");    
-    char* segment_string = getSegmentString(base_filename);
-    char* segment_string_outbox = getOutboxPath(segment_string, pbasedata->outbox);
-    char* playlist_string = getPlaylistString(base_filename);
-    char* playlist_string_outbox = getTmpPath(playlist_string);
-
-    //Set the paths for hlssink
-    g_object_set(data.hlssink,
-        "location", segment_string_outbox,
-        "playlist-location", playlist_string_outbox,
-        NULL);
-
-    printf("Starting recording \r\n%s\r\n%s\r\n", segment_string_outbox, playlist_string_outbox);
-
-    //free strings
-    free(base_filename);
-    free(segment_string);
-    free(segment_string_outbox);
-    free(playlist_string);
-    free(playlist_string_outbox);
-    
-    //Set to playing state
-    gst_element_set_state (data.pipeline, GST_STATE_PLAYING);
-
+    if(pthread_create(&recorder_record_thread, NULL, recorderThread, NULL)) 
+    {
+		fprintf(stderr, "Error creating uploader_thread\n");
+		return FAIL;
+	}
+ 
     return SUCCESS;
 }
 
@@ -480,14 +522,26 @@ int recorderStop() {
     printf("###### RECORDER: Stop\r\n");
     printf("######\r\n");
 
-    if(GST_STATE (data.pipeline) == GST_STATE_NULL)
-    {    
-       printf("Cant stop a recording thats already stopped\r\n");
-       return FAIL;
+    if(recorder_record_thread == (pthread_t)NULL)
+    {
+        printf("Recorder already stopped\r\n");
+        return FAIL;
     }
+    
     gst_element_send_event(data.rtspsrc_small, gst_event_new_eos());    
-    GstPadLinkReturn ret = gst_pad_unlink (data.rtspsrc_small_source_pad, data.rtph264depay_sink_pad);        
     gst_element_set_state (data.pipeline, GST_STATE_NULL);
+
+    //Stop loop
+    g_main_loop_quit(data.loop);
+
+    if(pthread_join(recorder_record_thread, NULL)) 
+    {
+		fprintf(stderr, "Error joining housekeeping thread\n");
+		return FAIL;
+	}     
+    
+    recorder_record_thread = (pthread_t)NULL;
+
     printf("Stop end\r\n");
     return SUCCESS;
 }
@@ -506,38 +560,35 @@ int recorderInit(ApplicationBaseData* bd)
     //Fetch reference to basedata
     pbasedata = bd;
 
-    if(pthread_create(&recorder_record_thread, NULL, recorderThread, NULL)) 
+    gst_init(&pbasedata->argc, &pbasedata->argv);    
+
+    guint major, minor, micro, nano;
+    gst_version(&major, &minor, &micro, &nano);    
+    printf("RECORDER: Gstreamer version %d %d %d %d\r\n", major, minor, micro, nano);
+    gst_debug_set_default_threshold(3); //Debug logging messages, 3 = FIXME, 2 = WARNING, 1 = ERROR
+
+    if(pthread_create(&recorder_housekeeping_thread, NULL, housekeepingThread, NULL)) 
     {
         fprintf(stderr, "Error creating uploader_thread\n");
         return FAIL;
     }
-    
-    if(pthread_create(&recorder_housekeeping_thread, NULL, housekeepingThread, NULL)) 
-    {
-		fprintf(stderr, "Error creating uploader_thread\n");
-		return FAIL;
-	}
+
     return SUCCESS;
 }
-
 
 int recorderExit()
 {
     printf("RECORDER Exit()\r\n");
 
-    if(pthread_join(recorder_record_thread, NULL)) 
-    {
-        fprintf(stderr, "Error joining recorder thread\n");
-        return FAIL;
-    }
+    recorderStop();
 
     if(pthread_join(recorder_housekeeping_thread, NULL)) 
     {
 		fprintf(stderr, "Error joining housekeeping thread\n");
 		return FAIL;
 	}     
-
+    
+    //Reveal leaks
     gst_deinit();
-
     return SUCCESS;
 }
